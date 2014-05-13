@@ -82,12 +82,6 @@ static uint8_t writeByteSPI(uint8_t reg, uint8_t val)
 	return rxbuf[1];
 }
 
-static void initGyro(void)
-{
-    /* see the L3GD20 Datasheet */
-    writeByteSPI(0x20, 0xcF);
-}
-
 static uint8_t readGyro(float* data)
 {
     /* read from L3GD20 registers and assemble data */
