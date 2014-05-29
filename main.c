@@ -8,29 +8,70 @@ PA2(TX) and PA3(RX) are routed to USART2 38400-8-N-1.
 #include "hal.h"
 #include "chprintf.h"
 
+#define MB_SIZE 2
+
+typedef struct {
+    int junk;
+    int thread;
+    unsigned long cnt;
+} msgLED;
+
+static char buffer[sizeof(msgLED)*MB_SIZE];
+
+//MemoryPool pool;
+
+static MEMORYPOOL_DECL(pool, sizeof(msgLED)*MB_SIZE, NULL);
+static MAILBOX_DECL(mbox, buffer, sizeof(buffer));
+
+// align data, this depends on your compiler. this works for GCC
+msgLED data[MB_SIZE] __attribute__((aligned(sizeof(stkalign_t))));
+
+
 /*
  * This is a periodic thread that does absolutely nothing except flashing
  * a LED.
  */
 static WORKING_AREA(blinker_wa, 128);
 static msg_t blinker(void *arg) {
-
-  (void)arg;
+//  (void)arg;
+msg_t msg1;
+msgLED msg2;
+    
   chRegSetThreadName("blinker");
-  while (TRUE) {
-    palSetPad(GPIOC, GPIOC_LED4);
-    chThdSleepMilliseconds(500);
-    palClearPad(GPIOC, GPIOC_LED4);
-    chThdSleepMilliseconds(500);
-  }
+
+while (TRUE) {
+    // Wait on a message from the working threads to display
+    msg1 = chMBFetch(&mbox, (msg_t *)&msg2, TIME_INFINITE);
+
+    if (msg1 == RDY_OK) {
+	// If we get here, we have a message
+	if (msg2.thread == 1) {
+//	    chprintf((BaseSequentialStream *) &SD2, "echo1 %d\n\r", msg2.cnt);
+	    palSetPad(GPIOC, GPIOC_LED3);
+	    chThdSleepMilliseconds(msg2.cnt * 1);
+	    palClearPad(GPIOC, GPIOC_LED3);
+	    chThdSleepMilliseconds(msg2.cnt * 1);
+	}
+	if (msg2.thread == 2) {
+	    chprintf((BaseSequentialStream *) &SD2, "echo2 %d\n\r", msg2.cnt);
+	}
+	} else {
+	    chprintf((BaseSequentialStream *) &SD2, "Fetch status %d\n\r", msg1);
+    }
+// Now we have to free the memory pool object
+    chPoolFree(&pool, (void *)&msg2);
 }
+return 0;
+}
+
+
 
 //trig thread
 static WORKING_AREA(trig_wa, 128);
 static msg_t trig(void *arg) {
-
   (void)arg;
   chRegSetThreadName("trig");
+
   while (TRUE) {
     palSetPad(GPIOC, 11);         /* set 11. */
     chThdSleepMilliseconds(20);
@@ -43,13 +84,14 @@ static msg_t trig(void *arg) {
 icucnt_t last_width, last_period;
 static void icuwidthcb(ICUDriver *icup) {
 
-  palSetPad(GPIOC, GPIOC_LED3);
+  palSetPad(GPIOC, GPIOC_LED4);
   last_width = icuGetWidth(icup);
+
 }
 
 static void icuperiodcb(ICUDriver *icup) {
 
-  palClearPad(GPIOC, GPIOC_LED3);
+  palClearPad(GPIOC, GPIOC_LED4);
   last_period = icuGetPeriod(icup);
 }
 
@@ -60,7 +102,7 @@ static void icuoverflowcb(ICUDriver *icup) {
 
 static ICUConfig icucfg = {
   ICU_INPUT_ACTIVE_HIGH,
-  10000,                                    /* 10kHz ICU clock frequency.   */
+  50000,                                    /* 10kHz ICU clock frequency.   */
   icuwidthcb,
   icuperiodcb,
   icuoverflowcb,
@@ -95,6 +137,17 @@ int main(void) {
   palSetPadMode(GPIOA, 2, PAL_MODE_ALTERNATE(1));      /* USART1 TX.       */
   palSetPadMode(GPIOA, 3, PAL_MODE_ALTERNATE(1));      /* USART1 RX.       */
 
+  //Initialize the mailbox
+  chMBInit(&mbox, (msg_t *)buffer, MB_SIZE);
+  chMBReset(&mbox);
+  chThdSleepMilliseconds(2000);
+
+  msg_t msg1;
+  msgLED msg, msg2;
+
+  chMBPost(&mbox, (msg_t)&msg, TIME_INFINITE);
+  chMBPost(&mbox, (msg_t)&msg2, TIME_INFINITE);
+
   /*
    * Starting the blinker thread.
    */
@@ -112,6 +165,16 @@ int main(void) {
     chprintf((BaseSequentialStream *) &SD2, "echo %d\n\r", last_width);
     chThdSleepMilliseconds(50);
 
+    //grab a memory pool item
+    msgLED *msg = (msgLED *)chPoolAlloc(&pool);
+    if (msg != NULL) {
+	msg->thread = 1;
+	msg->cnt = last_width;
+    // Here we'll send something to the blinker thread
+//    chMBPost(&mbox, (msg_t)msg, TIME_IMMEDIATE);
+	chMBPostAhead(&mbox, (msg_t)msg, TIME_IMMEDIATE);
+    }
+    chThdSleepMilliseconds(20);
   }
   return 0;
 }
